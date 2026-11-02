@@ -1,5 +1,10 @@
 name: Publish signed Android binaries
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing signed binary tag to publish
+        required: true
   push:
     tags: ['admin-v*', 'freelancer-v*']
 permissions:
@@ -9,23 +14,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - name: Verify signed binary and publish
         env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^(admin|freelancer)-v([1-9][0-9]*)$ ]]
+          [[ "$RELEASE_TAG" =~ ^(admin|freelancer)-v([1-9][0-9]*)$ ]]
           app=${BASH_REMATCH[1]}
           code=${BASH_REMATCH[2]}
           case "$app" in
             admin) file=app-release.apk; cert=38a398c43b7fac9d10fbe4307b309a662bbb2f3a03f65f7a41fb51cd6ae41128 ;;
             freelancer) file=freelancer-release.apk; cert=20addb1c75b5c78d55967cbf6940c6f565d21e067c2d5226d68d51a3b87ce41e ;;
           esac
-          sdk=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          sdk="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           signer=$("$sdk" verify --print-certs "$file" | awk '/Signer #1 certificate SHA-256 digest:/ {print $NF}')
-          [[ "$signer" == "$cert" ]]
+          echo "Verified signer: $signer"
+          [[ "$signer" == "$cert" ]] || { echo "Unexpected signing identity"; exit 1; }
           info=$("${sdk%/*}/aapt" dump badging "$file")
+          head -n 1 <<< "$info"
           grep -Fq "package: name='com.falconova.$app' versionCode='$code'" <<< "$info"
           ! grep -q '^application-debuggable' <<< "$info" || exit 1
           printf 'sha256: %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" > notes.md
-          gh release create "$GITHUB_REF_NAME" "$file" --verify-tag --title "Falconova $app 1.0.$code" --notes-file notes.md
+          gh release create "$RELEASE_TAG" "$file" --verify-tag --title "Falconova $app 1.0.$code" --notes-file notes.md
